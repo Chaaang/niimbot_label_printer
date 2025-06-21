@@ -222,7 +222,7 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
 
     private suspend fun connect(): OutputStream? {
         //state = false
-           Log.d(TAG, "TESTING CONNECT")
+           
         return withContext(Dispatchers.IO) {
             var outputStream: OutputStream? = null
             val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
