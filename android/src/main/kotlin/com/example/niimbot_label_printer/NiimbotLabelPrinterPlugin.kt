@@ -163,7 +163,15 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
                 output?.let { out ->
                     try {
                     // Minimal 1x1 label data
-                        val dummyData = byteArrayOf(0x55,0x55,0x01,0x01,0x00,0xAA,0xAA)
+                        val dummyData = byteArrayOf(
+                                        0x55.toByte(),
+                                        0x55.toByte(),
+                                        0x01.toByte(),
+                                        0x01.toByte(),
+                                        0x00.toByte(),
+                                        0xAA.toByte(),
+                                        0xAA.toByte()
+                                        )
                         out.write(dummyData)
                         out.flush()
                 } catch (_: Exception) {
