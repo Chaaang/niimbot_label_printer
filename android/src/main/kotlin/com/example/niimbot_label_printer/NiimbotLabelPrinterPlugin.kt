@@ -198,6 +198,10 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
 
             GlobalScope.launch {
                 try {
+
+                    // IMPORTANT: send init commands before first bitmap print
+                    initNiimbotPrinter(niimbotPrinter)
+                    
                     niimbotPrinter.printBitmap(bitmap, density = density, labelType = labelType, rotate = rotate, invertColor = invertColor)
                     println("✅ Print completed successfully.")
                     withContext(Dispatchers.Main) {
@@ -295,7 +299,19 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
     // private fun disconncet() {
     //     bluetoothSocket?.close()
     // }
+    //Testing
+    private fun initNiimbotPrinter(printer: NiimbotPrinter) {
+    printer.sendCommand(byteArrayOf(0x1B, 0x40)) // Initialize
+    Thread.sleep(50)
 
+    printer.sendCommand(byteArrayOf(0x1B, 0x4A, 0x10)) // Feed 16 dots
+    Thread.sleep(50)
+
+    printer.sendCommand(byteArrayOf(0x1D, 0x28, 0x4C, 0x02, 0x00, 0x30, 0x45)) // Density settings
+    Thread.sleep(50)
+    }
+
+    //Testing
     private fun disconnect() {
     try {
         bluetoothSocket?.close()
