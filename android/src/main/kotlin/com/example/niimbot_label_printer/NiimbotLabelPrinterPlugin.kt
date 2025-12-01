@@ -112,89 +112,102 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
 
             result.success(lista)
         } else if (call.method == "connect") {
-            // var macimpresora = call.arguments.toString();
-            // //Log.d(TAG, "coneccting kt: mac: "+macimpresora);
-            // if (macimpresora.length > 0) {
-            //     mac = macimpresora;
-            // } else {
-            //     result.success(false)
-            // }
-
-            // GlobalScope.launch(Dispatchers.IO) {
-            //     try {
-            //         val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
-            //         if (bluetoothAdapter != null && bluetoothAdapter.isEnabled) {
-            //             val device = bluetoothAdapter.getRemoteDevice(mac)
-            //             bluetoothSocket = device?.createRfcommSocketToServiceRecord(
-            //                 UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-            //             )
-            //             bluetoothSocket?.connect()
-            //             result.success(true)
-            //         } else {
-            //             result.success(false)
-            //         }
-            //     } catch (e: IOException) {
-            //         e.printStackTrace()
-            //         result.success(false)
-            //     }
-            // }
-                val macimpresora = call.arguments.toString()
-    if (macimpresora.isNotEmpty()) {
-        mac = macimpresora
-    } else {
-        result.success(false)
-        return
-    }
-
-    GlobalScope.launch(Dispatchers.IO) {
-        try {
-            val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
-            if (bluetoothAdapter != null && bluetoothAdapter.isEnabled) {
-                val device = bluetoothAdapter.getRemoteDevice(mac)
-                bluetoothSocket = device.createRfcommSocketToServiceRecord(
-                    UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-                )
-                bluetoothSocket?.connect()
-
-                // Store OutputStream
-                val output = bluetoothSocket?.outputStream
-                
-                // Dummy print to prevent first empty paper
-                output?.let { out ->
-                    try {
-                        // Minimal 1x1 label data
-                        val dummyData = byteArrayOf(
-                            0x55.toByte(),
-                            0x55.toByte(),
-                            0x01.toByte(),
-                            0x01.toByte(),
-                            0x00.toByte(),
-                            0xAA.toByte(),
-                            0xAA.toByte()
+            val macimpresora = call.arguments.toString()
+            if (macimpresora.isNotEmpty()) {
+                mac = macimpresora
+            } else {
+                result.success(false)
+                return
+            }
+        
+            GlobalScope.launch(Dispatchers.IO) {
+                try {
+                    val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
+                    if (bluetoothAdapter != null && bluetoothAdapter.isEnabled) {
+                        val device = bluetoothAdapter.getRemoteDevice(mac)
+                        bluetoothSocket = device?.createRfcommSocketToServiceRecord(
+                            UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
                         )
-                        out.write(dummyData)
-                        out.flush()
-                    } catch (_: Exception) {
-                        // Ignore errors here; printer may not respond
+        
+                        // Establish the connection
+                        bluetoothSocket?.connect()
+        
+                        // Verify socket is connected and store streams
+                        if (bluetoothSocket?.isConnected == true) {
+                            try {
+                                // Store the streams as member variables
+                                outputStream = bluetoothSocket?.outputStream
+                                inputStream = bluetoothSocket?.inputStream
+        
+                                if (outputStream != null && inputStream != null) {
+                                    Log.d(TAG, "Streams obtained successfully")
+        
+                                    // --- Dummy print to initialize printer ---
+                                    try {
+                                        Log.d(TAG, "Sending dummy print to initialize printer...")
+        
+                                        val dummyData = byteArrayOf(
+                                            0x55.toByte(),
+                                            0x55.toByte(),
+                                            0x01.toByte(),
+                                            0x01.toByte(),
+                                            0x00.toByte(),
+                                            0xAA.toByte(),
+                                            0xAA.toByte()
+                                        )
+                                        outputStream?.write(dummyData)
+                                        outputStream?.flush()
+        
+                                        Log.d(TAG, "Printer initialization complete")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Printer dummy print warning: ${e.message}")
+                                        // Non-fatal; continue even if this fails
+                                    }
+        
+                                    withContext(Dispatchers.Main) {
+                                        result.success(true)
+                                    }
+                                } else {
+                                    Log.e(TAG, "Failed to obtain streams")
+                                    outputStream = null
+                                    inputStream = null
+                                    bluetoothSocket?.close()
+                                    bluetoothSocket = null
+                                    withContext(Dispatchers.Main) {
+                                        result.success(false)
+                                    }
+                                }
+                            } catch (e: IOException) {
+                                Log.e(TAG, "Stream access error: ${e.message}")
+                                outputStream = null
+                                inputStream = null
+                                bluetoothSocket?.close()
+                                bluetoothSocket = null
+                                withContext(Dispatchers.Main) {
+                                    result.success(false)
+                                }
+                            }
+                        } else {
+                            Log.e(TAG, "Socket not connected")
+                            withContext(Dispatchers.Main) {
+                                result.success(false)
+                            }
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            result.success(false)
+                        }
+                    }
+                } catch (e: IOException) {
+                    Log.e(TAG, "Connection error: ${e.message}")
+                    e.printStackTrace()
+                    bluetoothSocket?.close()
+                    bluetoothSocket = null
+                    withContext(Dispatchers.Main) {
+                        result.success(false)
                     }
                 }
-                withContext(Dispatchers.Main) {
-                    result.success(true)
-                }
-            } else {
-                withContext(Dispatchers.Main) {
-                    result.success(false)
-                }
             }
-        } catch (e: IOException) {
-            e.printStackTrace()
-            bluetoothSocket?.close()
-            bluetoothSocket = null
-            withContext(Dispatchers.Main) {
-                result.success(false)
-            }
-        }
-    }
         } else if (call.method == "send") {
     val datosImagen = call.arguments as Map<String, Any>
 
