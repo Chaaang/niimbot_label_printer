@@ -196,27 +196,51 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
         bluetoothSocket?.let { socket ->
             niimbotPrinter = NiimbotPrinter(mContext, socket)
 
-            GlobalScope.launch {
-                try {
+            // GlobalScope.launch {
+            //     try {
 
-                    // IMPORTANT: send init commands before first bitmap print
-                      initNiimbotPrinter(niimbotPrinter)
+            //         // IMPORTANT: send init commands before first bitmap print
+            //           initNiimbotPrinter(niimbotPrinter)
                     
-                    niimbotPrinter.printBitmap(bitmap, density = density, labelType = labelType, rotate = rotate, invertColor = invertColor)
-                    println("✅ Print completed successfully.")
-                    withContext(Dispatchers.Main) {
-                        result.success(true)
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    println("❌ Print failed: ${e.message}")
-                    bluetoothSocket?.close()
-                    bluetoothSocket = null
-                    withContext(Dispatchers.Main) {
-                        result.success(false)
-                    }
-                }
-            }
+            //         niimbotPrinter.printBitmap(bitmap, density = density, labelType = labelType, rotate = rotate, invertColor = invertColor)
+            //         println("✅ Print completed successfully.")
+            //         withContext(Dispatchers.Main) {
+            //             result.success(true)
+            //         }
+            //     } catch (e: Exception) {
+            //         e.printStackTrace()
+            //         println("❌ Print failed: ${e.message}")
+            //         bluetoothSocket?.close()
+            //         bluetoothSocket = null
+            //         withContext(Dispatchers.Main) {
+            //             result.success(false)
+            //         }
+            //     }
+            // }
+            GlobalScope.launch {
+    try {
+
+        withContext(Dispatchers.IO) {
+            initNiimbotPrinter(niimbotPrinter)
+        }
+
+        niimbotPrinter.printBitmap(bitmap, density = density, labelType = labelType, rotate = rotate, invertColor = invertColor)
+
+        withContext(Dispatchers.Main) {
+            result.success(true)
+        }
+
+    } catch (e: Exception) {
+        e.printStackTrace()
+        bluetoothSocket?.close()
+        bluetoothSocket = null
+
+        withContext(Dispatchers.Main) {
+            result.success(false)
+        }
+    }
+}
+
         } ?: result.success(false)
     } else {
         result.success(false)
