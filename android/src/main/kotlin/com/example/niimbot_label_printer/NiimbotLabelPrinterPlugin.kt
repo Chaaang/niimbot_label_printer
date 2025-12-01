@@ -155,6 +155,40 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
                     UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
                 )
                 bluetoothSocket?.connect()
+                 if (bluetoothSocket?.isConnected == true) {
+                            try {
+                                // FIX: Get and STORE the streams as member variables
+                                // This ensures we use the same stream instances throughout
+                                // rather than getting fresh (potentially uninitialized) references each time
+                                outputStream = bluetoothSocket?.outputStream
+                                inputStream = bluetoothSocket?.inputStream
+                                
+                                if (outputStream != null && inputStream != null) {
+                                    Log.d(TAG, "Streams obtained and stored successfully")
+                                    
+                                    // FIX: Initialize printer by sending a complete dummy print job
+                                    // This fully establishes the entire print pipeline including image data transfer
+                                    try {
+                                        Log.d(TAG, "Initializing printer with dummy print job...")
+                                        
+                                        // Send a minimal 1x1 white pixel print to initialize everything
+                                        sendDummyPrint(outputStream!!, inputStream!!)
+                                        
+                                        Log.d(TAG, "Printer initialization complete")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Printer initialization warning: ${e.message}")
+                                        // Non-fatal - continue even if initialization has issues
+                                    }
+                                    
+                                    result.success(true)
+                                } else {
+                                    Log.e(TAG, "Failed to initialize streams")
+                                    outputStream = null
+                                    inputStream = null
+                                    bluetoothSocket?.close()
+                                    bluetoothSocket = null
+                                    result.success(false)
+                                }
                 withContext(Dispatchers.Main) {
                     result.success(true)
                 }
@@ -295,6 +329,59 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
     // private fun disconncet() {
     //     bluetoothSocket?.close()
     // }
+
+        private fun sendDummyPrint(output: OutputStream, input: InputStream) {
+        // Send a complete minimal print job (1x1 white pixel) to initialize the print pipeline
+        // This ensures all printer state is properly set up before the first real print
+        
+        fun sendCmd(cmd: Byte, data: ByteArray) {
+            val packet = createPacket(cmd, data)
+            output.write(packet)
+            output.flush()
+            Thread.sleep(50)
+            // Try to read response
+            if (input.available() > 0) {
+                val buf = ByteArray(1024)
+                input.read(buf)
+            }
+        }
+        
+        // Minimal print sequence
+        sendCmd(0x21, byteArrayOf(3))  // Set density to 3
+        sendCmd(0x23, byteArrayOf(1))  // Set label type to 1
+        sendCmd(0x01, byteArrayOf(1))  // Start print
+        sendCmd(0xDC.toByte(), byteArrayOf(1))  // Heartbeat (absorb dropped packet)
+        sendCmd(0x20, byteArrayOf(1))  // Allow print clear
+        sendCmd(0x03, byteArrayOf(1))  // Start page print
+        
+        // Set 1x1 dimension
+        val dimData = ByteBuffer.allocate(4).putShort(1).putShort(1).array()
+        sendCmd(0x13, dimData)
+        
+        // Set quantity 1
+        val qtyData = ByteBuffer.allocate(2).putShort(1).array()
+        sendCmd(0x15, qtyData)
+        
+        // Send single white pixel (no black pixels)
+        val imageHeader = ByteBuffer.allocate(6)
+            .putShort(0)  // y = 0
+            .put(0.toByte()).put(0.toByte()).put(0.toByte())
+            .put(1.toByte())
+            .array()
+        val imageData = imageHeader + byteArrayOf(0)  // 1 byte of white
+        sendCmd(0x85.toByte(), imageData)
+        
+        // End page print
+        sendCmd(0xE3.toByte(), byteArrayOf(1))
+        
+        // Wait briefly for print status
+        Thread.sleep(100)
+        
+        // End print
+        sendCmd(0xF3.toByte(), byteArrayOf(1))
+        
+        Log.d(TAG, "Dummy print job completed")
+    }
 
     private fun disconnect() {
     try {
