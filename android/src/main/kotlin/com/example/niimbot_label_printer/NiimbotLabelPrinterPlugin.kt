@@ -155,6 +155,21 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
                     UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
                 )
                 bluetoothSocket?.connect()
+
+                        // Store OutputStream
+                val output = bluetoothSocket?.outputStream
+
+            // Dummy print to prevent first empty paper
+                output?.let { out ->
+                    try {
+                    // Minimal 1x1 label data
+                        val dummyData = byteArrayOf(0x55,0x55,0x01,0x01,0x00,0xAA,0xAA)
+                        out.write(dummyData)
+                        out.flush()
+                } catch (_: Exception) {
+                    // Ignore errors here; printer may not respond
+                }
+            }
                 withContext(Dispatchers.Main) {
                     result.success(true)
                 }
