@@ -46,6 +46,11 @@ class NiimbotLabelPrinter {
     return result ?? false;
   }
 
+  /// Returns `true` once the printer confirms the page was printed.
+  ///
+  /// On failure throws a [PlatformException] whose `code` is one of NO_PAPER, COVER_OPEN,
+  /// PRINTER_BUSY, PRINT_TIMEOUT, NOT_CONNECTED or PRINTER_ERROR. The connection stays open
+  /// after a failed print (except NOT_CONNECTED), so the next call can be made directly.
   Future<bool> send(PrintData data) async {
     final bool? result = await methodChannel.invokeMethod<bool>('send', data.toMap());
     //final bool? result = await methodChannel.invokeMethod<bool>('send', bytes);
