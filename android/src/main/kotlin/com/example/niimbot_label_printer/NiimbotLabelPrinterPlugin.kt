@@ -9,11 +9,18 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 import androidx.core.content.ContextCompat
@@ -44,14 +51,36 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
     private var activeResult: Result? = null
     private var permissionGranted: Boolean = false
 
+    @Volatile
     private var bluetoothSocket: BluetoothSocket? = null
+    private val socketLock = Any()
     private lateinit var mac: String
-    private lateinit var niimbotPrinter: NiimbotPrinter
+
+    private lateinit var scope: CoroutineScope
+    private val mainHandler = Handler(Looper.getMainLooper())
+    /** Held for the whole print job; a second `send` fails fast with PRINTER_BUSY. */
+    private val jobMutex = Mutex()
+    /** Serializes socket I/O between a print job and the isConnected heartbeat probe. */
+    private val socketMutex = Mutex()
+
+    companion object {
+        const val ERROR_NO_PAPER = "NO_PAPER"
+        const val ERROR_COVER_OPEN = "COVER_OPEN"
+        const val ERROR_PRINTER_BUSY = "PRINTER_BUSY"
+        const val ERROR_PRINT_TIMEOUT = "PRINT_TIMEOUT"
+        const val ERROR_NOT_CONNECTED = "NOT_CONNECTED"
+        const val ERROR_PRINTER_ERROR = "PRINTER_ERROR"
+    }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "niimbot_label_printer")
         channel.setMethodCallHandler(this)
         this.mContext = flutterPluginBinding.applicationContext
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    }
+
+    private fun onMain(block: () -> Unit) {
+        mainHandler.post(block)
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -74,10 +103,11 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
 
             result.success(permission)
         } else if (!permissionGranted && sdkversion >= 31) {
-            Log.i(
-                "warning",
+            val message =
                 "Permission bluetooth granted is false, check in settings that the permission of nearby devices is activated"
-            )
+            Log.i("warning", message)
+            val code = if (call.method == "send") ERROR_NOT_CONNECTED else "PERMISSION_DENIED"
+            result.error(code, message, null)
             return;
         } else if (call.method == "getPlatformVersion") {
             var androidVersion: String = android.os.Build.VERSION.RELEASE;
@@ -90,23 +120,7 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
             }
             result.success(state)
         } else if (call.method == "isConnected") {
-            if (bluetoothSocket != null) {
-                try {
-                    bluetoothSocket?.outputStream?.run {
-                        write(" ".toByteArray())
-                        result.success(true)
-                        //Log.d(TAG, "paso yes coexion ")
-                    }
-                } catch (e: Exception) {
-                    result.success(false)
-                    bluetoothSocket = null
-                    //mensajeToast("Dispositivo fue desconectado, reconecte")
-                    //Log.d(TAG, "state print: ${e.message}")
-                }
-            } else {
-                result.success(false)
-                //Log.d(TAG, "no paso es false ")
-            }
+            isConnected(result)
         } else if (call.method == "getPairedDevices") {
             var lista: List<String> = dispositivosVinculados()
 
@@ -146,78 +160,38 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
         return
     }
 
-    GlobalScope.launch(Dispatchers.IO) {
+    scope.launch {
+        var socket: BluetoothSocket? = null
         try {
             val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
             if (bluetoothAdapter != null && bluetoothAdapter.isEnabled) {
                 val device = bluetoothAdapter.getRemoteDevice(mac)
-                bluetoothSocket = device.createRfcommSocketToServiceRecord(
+                socket = device.createRfcommSocketToServiceRecord(
                     UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
                 )
-                bluetoothSocket?.connect()
-                withContext(Dispatchers.Main) {
-                    result.success(true)
+                socket.connect()
+                val previous = synchronized(socketLock) {
+                    bluetoothSocket.also { bluetoothSocket = socket }
                 }
+                if (previous != null && previous !== socket) closeSocket(previous)
+                onMain { result.success(true) }
             } else {
-                withContext(Dispatchers.Main) {
-                    result.success(false)
-                }
+                onMain { result.success(false) }
             }
-        } catch (e: IOException) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             e.printStackTrace()
-            bluetoothSocket?.close()
-            bluetoothSocket = null
-            withContext(Dispatchers.Main) {
-                result.success(false)
+            try {
+                socket?.close()
+            } catch (closeError: IOException) {
+                Log.w(TAG, "close after failed connect: ${closeError.message}")
             }
+            onMain { result.success(false) }
         }
     }
         } else if (call.method == "send") {
-    val datosImagen = call.arguments as Map<String, Any>
-
-    val bytes = (datosImagen["bytes"] as? List<Int>)?.map { it.toByte() }?.toByteArray()
-    val width = (datosImagen["width"] as? Int) ?: 0
-    val height = (datosImagen["height"] as? Int) ?: 0
-    val rotate = (datosImagen["rotate"] as? Boolean) ?: false
-    val invertColor = (datosImagen["invertColor"] as? Boolean) ?: false
-    val density = (datosImagen["density"] as? Int) ?: 3
-    val labelType = (datosImagen["labelType"] as? Int) ?: 1
-
-    if (bytes != null && width > 0 && height > 0) {
-        val expectedBufferSize = width * height * 4
-        if (bytes.size != expectedBufferSize) {
-            result.success(false)
-            return
-        }
-
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(bytes))
-
-        bluetoothSocket?.let { socket ->
-            niimbotPrinter = NiimbotPrinter(mContext, socket)
-
-            GlobalScope.launch {
-                try {
-                    niimbotPrinter.printBitmap(bitmap, density = density, labelType = labelType, rotate = rotate, invertColor = invertColor)
-                    println("✅ Print completed successfully.")
-                    withContext(Dispatchers.Main) {
-                        result.success(true)
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    println("❌ Print failed: ${e.message}")
-                    bluetoothSocket?.close()
-                    bluetoothSocket = null
-                    withContext(Dispatchers.Main) {
-                        result.success(false)
-                    }
-                }
-            }
-        } ?: result.success(false)
-    } else {
-        result.success(false)
-    }
-
+            send(call, result)
         } else if (call.method == "disconnect") {
             disconnect()
             result.success(true)
@@ -297,16 +271,127 @@ class NiimbotLabelPrinterPlugin : FlutterPlugin, MethodCallHandler {
     // }
 
     private fun disconnect() {
-    try {
-        bluetoothSocket?.close()
-    } catch (e: IOException) {
-        e.printStackTrace()
+        bluetoothSocket?.let { closeSocket(it) }
     }
-    bluetoothSocket = null
-}
+
+    /** Closes [socket] and clears the field only if it still refers to that same socket. */
+    private fun closeSocket(socket: BluetoothSocket) {
+        try {
+            socket.close()
+        } catch (e: IOException) {
+            e.printStackTrace()
+        }
+        synchronized(socketLock) {
+            if (bluetoothSocket === socket) bluetoothSocket = null
+        }
+    }
+
+    private fun send(call: MethodCall, result: Result) {
+        @Suppress("UNCHECKED_CAST")
+        val datosImagen = call.arguments as? Map<String, Any>
+
+        @Suppress("UNCHECKED_CAST")
+        val bytes = (datosImagen?.get("bytes") as? List<Int>)?.map { it.toByte() }?.toByteArray()
+        val width = (datosImagen?.get("width") as? Int) ?: 0
+        val height = (datosImagen?.get("height") as? Int) ?: 0
+        val rotate = (datosImagen?.get("rotate") as? Boolean) ?: false
+        val invertColor = (datosImagen?.get("invertColor") as? Boolean) ?: false
+        val density = (datosImagen?.get("density") as? Int) ?: 3
+        val labelType = (datosImagen?.get("labelType") as? Int) ?: 1
+
+        if (bytes == null || width <= 0 || height <= 0 || bytes.size != width * height * 4) {
+            result.error(ERROR_PRINTER_ERROR, "Invalid image data: expected ${width}x${height} RGBA bytes", null)
+            return
+        }
+
+        val socket = bluetoothSocket
+        if (socket == null || !socket.isConnected) {
+            result.error(ERROR_NOT_CONNECTED, "Printer is not connected", null)
+            return
+        }
+
+        if (!jobMutex.tryLock()) {
+            result.error(ERROR_PRINTER_BUSY, "Another print job is still running", null)
+            return
+        }
+
+        scope.launch {
+            try {
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(bytes))
+
+                socketMutex.withLock {
+                    NiimbotPrinter(mContext, socket).printBitmap(
+                        bitmap, density = density, labelType = labelType, rotate = rotate, invertColor = invertColor
+                    )
+                }
+                Log.i(TAG, "Print completed successfully")
+                onMain { result.success(true) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val (code, message) = describePrintFailure(e)
+                Log.e(TAG, "Print failed: $code $message", e)
+                // Only a broken connection closes the socket, and only the one this job used.
+                if (e is IOException) closeSocket(socket)
+                onMain { result.error(code, message, null) }
+            } finally {
+                jobMutex.unlock()
+            }
+        }
+    }
+
+    private fun describePrintFailure(e: Exception): Pair<String, String> = when (e) {
+        is PrinterErrorException -> when (e.errorCode) {
+            NiimbotPrinter.ERROR_NO_PAPER -> ERROR_NO_PAPER to "No paper loaded"
+            NiimbotPrinter.ERROR_COVER_OPEN -> ERROR_COVER_OPEN to "Printer cover is open"
+            else -> ERROR_PRINTER_ERROR to "Printer reported error code 0x%02X".format(e.errorCode)
+        }
+        is PrintTimeoutException -> ERROR_PRINT_TIMEOUT to (e.message ?: "Print timed out")
+        is IOException -> ERROR_NOT_CONNECTED to "Bluetooth connection lost: ${e.message}"
+        else -> ERROR_PRINTER_ERROR to (e.message ?: e.javaClass.simpleName)
+    }
+
+    /**
+     * Never writes while a job is running. When idle, a heartbeat verifies the link; only an
+     * IOException (dead connection) reports false and closes the socket.
+     */
+    private fun isConnected(result: Result) {
+        val socket = bluetoothSocket
+        if (socket == null || !socket.isConnected) {
+            result.success(false)
+            return
+        }
+        if (jobMutex.isLocked || !socketMutex.tryLock()) {
+            result.success(true)
+            return
+        }
+
+        scope.launch {
+            val connected = try {
+                NiimbotPrinter(mContext, socket).heartbeat()
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                Log.w(TAG, "Heartbeat failed, connection lost: ${e.message}")
+                closeSocket(socket)
+                false
+            } catch (e: Exception) {
+                // Printer error / slow answer: the link itself is still up.
+                Log.d(TAG, "Heartbeat: ${e.message}")
+                true
+            } finally {
+                socketMutex.unlock()
+            }
+            onMain { result.success(connected) }
+        }
+    }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
+        scope.cancel()
+        disconnect()
     }
 }
 
